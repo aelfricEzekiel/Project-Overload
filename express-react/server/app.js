@@ -62,76 +62,69 @@ app.get('/data', (req, res) => {
     })
 })
 
-app.post('/login', (req, res) => {
-    function generateId(length) {
-        let result = '';
-        let characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%&*()_+';
-        let charactersLength = characters.length;
-        for (let i = 0; i < length; i++) {
-            result += characters.charAt(Math.floor(Math.random() * charactersLength));
+app.post('/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const SECRET_KEY = process.env.SECRET_KEY || generateId(70);
+
+        if (!email && !password) {
+            return res.status(400).json({ error: "Fill up all required fields" })
         }
-        return result;
-    }
 
-    const { email, password } = req.body;
-    const SECRET_KEY = process.env.SECRET_KEY || generateId(70);
-
-    if (!SECRET_KEY) {
-        return res.json({
-            error: "Failed to generate token"
-        })
-    } else {
-        console.log(`Token: ${SECRET_KEY}`);
-    }
-
-    const loggedInQuery = `SELECT * FROM tbl_accounts WHERE email = ? AND password = ?`;
-
-    if (!email && !password) {
-        return res.status(200).json({
-            error: "Fill up all required fields"
-        })
-    }
-
-    if (!email) {
-        return res.status(200).json({ error: "Email is required!" })
-    }
-
-    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.com$/;
-    if (!emailRegex.test(email)) {
-        return res.status(200).json({ error: "Invalid email adddress" })
-    }
-
-    if (!password) {
-        return res.json({ error: "Password is required!" })
-    }
-
-    if (password.length <= 8) {
-        return res.status(200).json({ error: "Incorrect password" })
-    }
-
-    conn.query(loggedInQuery, [email, password], (err, result) => {
-        if (err) {
-            return res.status(200).json({ error: "Failed to login" })
-        } else {
-            if (!result.find((user) => user.email === email && user.password === password)) {
-                return res.status(200).json({ error: "Invalid email and password" })
-            }
-
-            const user = result[0];
-            const token = jwt.sign({ id: user.id }, SECRET_KEY, { expiresIn: '1h' });
-            const session = req.session.user = {
-                id: user.id,
-                firstName: user.firstName,
-                lastName: user.lastName,
-            }
-
-            return res.status(200).json({
-                message: "Logged in successfully",
-                token: token,
-                session: session
-            })
+        if (!email) {
+            return res.status(400).json({ error: "Email is required" })
         }
-    })
+
+        const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+        if (!emailRegex.test(email)) {
+            return res.status(400).json({ error: "Invalid email address" })
+        }
+
+        if (!password) {
+            return res.status(400).json({ error: "Password is required" })
+        }
+
+        if (password.length < 8) {
+            return res.status(400).json({ error: "Incorrect password" })
+        }
+
+        const loggedInQuery = `SELECT * FROM tbl_accounts WHERE email = ?`;
+        conn.query(loggedInQuery, [email], async (err, result) => {
+            try {
+                if (err) {
+                    return res.status(500).json({ error: "Failed to login" })
+                }
+
+                if (!result || result.length === 0) {
+                    return res.status(401).json({ error: "Invalid email or password" })
+                }
+
+                const user = result[0];
+                const isPasswordValid = await bcrypt.compare(password, user.password);
+
+                if (!isPasswordValid) {
+                    return res.status(401).json({ error: "Invalid email or password" })
+                }
+
+                const token = jwt.sign({ id: user.id }, SECRET_KEY, { expiresIn: '1h' });
+                req.session.user = {
+                    id: user.id,
+                    firstName: user.firstName,
+                    lastName: user.lastName,
+                }
+
+                return res.status(200).json({
+                    message: "Logged in successfully",
+                    token: token,
+                    session: req.session.user
+                })
+            } catch (hashErr) {
+                return res.status(500).json({ error: "An unexpected error occurred" })
+            }
+        })
+    } catch (err) {
+        return res.status(500).json({ error: "An unexpected error occurred" })
+    }
 })
 
 const validateDate = (date) => {
@@ -230,35 +223,39 @@ app.post('/register', async (req, res) => {
         // Check for duplicate email before inserting
         const checkEmailQuery = `SELECT id FROM tbl_accounts WHERE email = ?`;
         conn.query(checkEmailQuery, [email], async (err, existingUsers) => {
-            if (err) {
-                return res.status(500).json({ error: "An internal server error occurred" })
-            }
-
-            if (existingUsers.length > 0) {
-                return res.status(409).json({ error: "An account with this email already exists" })
-            }
-
-            // Hash the password before storing
-            const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
-
-            const insertQuery = `INSERT INTO tbl_accounts (firstName, lastName, email, dateOfbirth, password) VALUES (?, ?, ?, ?, ?)`;
-            conn.query(insertQuery, [firstName, lastName, email, dateOfBirth, hashedPassword], (err, result) => {
+            try {
                 if (err) {
-                    return res.status(500).json({ error: "Failed to register user" })
+                    return res.status(500).json({ error: "An internal server error occurred" })
                 }
 
-                const SECRET_KEY = process.env.SECRET_KEY || generateId(70);
-                const token = jwt.sign({ id: result.insertId }, SECRET_KEY, { expiresIn: '1h' });
-                req.session.user = {
-                    id: result.insertId,
+                if (existingUsers.length > 0) {
+                    return res.status(409).json({ error: "An account with this email already exists" })
                 }
 
-                return res.status(201).json({
-                    message: "Registered successfully",
-                    token: token,
-                    session: req.session.user
+                // Hash the password before storing
+                const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
+
+                const insertQuery = `INSERT INTO tbl_accounts (firstName, lastName, email, dateOfbirth, password) VALUES (?, ?, ?, ?, ?)`;
+                conn.query(insertQuery, [firstName, lastName, email, dateOfBirth, hashedPassword], (err, result) => {
+                    if (err) {
+                        return res.status(500).json({ error: "Failed to register user" })
+                    }
+
+                    const SECRET_KEY = process.env.SECRET_KEY || generateId(70);
+                    const token = jwt.sign({ id: result.insertId }, SECRET_KEY, { expiresIn: '1h' });
+                    req.session.user = {
+                        id: result.insertId,
+                    }
+
+                    return res.status(201).json({
+                        message: "Registered successfully",
+                        token: token,
+                        session: req.session.user
+                    })
                 })
-            })
+            } catch (hashErr) {
+                return res.status(500).json({ error: "An unexpected error occurred" })
+            }
         })
     } catch (err) {
         return res.status(500).json({ error: "An unexpected error occurred" })
