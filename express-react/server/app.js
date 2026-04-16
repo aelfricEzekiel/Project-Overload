@@ -4,8 +4,11 @@ const cors = require('cors');
 const app = express();
 const conn = require('./mysql/conn');
 const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
 const path = require('path');
 const session = require('express-session');
+
+const BCRYPT_SALT_ROUNDS = 10;
 
 app.set('port', process.env.PORT || 5000);
 app.set('host', process.env.HOST || 'localhost');
@@ -164,89 +167,102 @@ const validateDate = (date) => {
     return day <= monthLengths[month - 1];
 }
 
-app.post('/register', (req, res) => {
-    const { firstName, lastName, dateOfBirth, email, password } = req.body;
+app.post('/register', async (req, res) => {
+    try {
+        const rawFirstName = req.body.firstName;
+        const rawLastName = req.body.lastName;
+        const rawEmail = req.body.email;
+        const dateOfBirth = req.body.dateOfBirth;
+        const password = req.body.password;
 
-    function generateId(length) {
-        let result = '';
-        let characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%&*()_+';
-        let charactersLength = characters.length;
-        for (let i = 0; i < length; i++) {
-            result += characters.charAt(Math.floor(Math.random() * charactersLength));
+        // Check if all fields are missing
+        if (!rawFirstName && !rawLastName && !rawEmail && !dateOfBirth && !password) {
+            return res.status(400).json({ error: "All fields are required" })
         }
-        return result;
-    }
 
-    const generateToken = process.env.SECRET_KEY || generateId(70);
-
-    if (!generateToken) {
-        return res.json({ error: "Failed to generate token" })
-    } else {
-        console.log(`Registration Token: ${generateToken}`);
-    }
-
-    const insertquery = `INSERT INTO tbl_accounts (firstName, lastName, email, dateOfbirth, password) VALUES (?, ?, ?, ?, ?)`;
-
-    if (!firstName && !lastName && !email && !dateOfBirth && !password) {
-        return res.status(200).json({ message: "All fields are required" })
-    }
-
-    if (!firstName) {
-        return res.status(200).json({ message: "First Name is required" })
-    }
-
-    if (!lastName) {
-        return res.status(200).json({ message: "Last Name is required" })
-    }
-
-    if (!email) {
-        return res.status(200).json({ message: "Email is required" })
-    }
-
-    const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.com$/;
-    if (!emailRegex.test(email)) {
-        return res.status(200).json({ message: "Invalid email address" })
-    }
-    
-    if(!dateOfBirth){
-        return res.status(200).json({ message: "Date of Birth is required" })
-    }
-
-    if(!validateDate(dateOfBirth)){
-        return res.status(200).json({ message: "Invalid date of birth" })
-    }
-
-    if (!password) {
-        return res.status(200).json({ message: "Password is required" })
-    }
-
-    if (password.length <= 4) {
-        return res.status(200).json({ message: "Your password is weak" })
-    }
-
-    if (password.length <= 8) {
-        return res.status(200).json({ message: "Your password is moderate" })
-    }
-
-    if (password.length <= 12 && password.length >= 8) {
-        return res.status(200).json({ message: "Your password is strong" })
-    }
-
-    conn.query(insertquery, [firstName, lastName, email, dateOfBirth, password], (err, result) => {
-        if (err) {
-            return res.status(200).json({ message: "Failed to register user" })
-        };
-
-        const token = jwt.sign({ id: result.insertId }, generateToken, { expiresIn: '1h' });
-        const session = req.session.user = {
-            id: result.insertId,
+        // Validate individual required fields
+        if (!rawFirstName) {
+            return res.status(400).json({ error: "First Name is required" })
         }
-        return res.status(200).json({
-            message: "Registered Successfully", 
-            token: token, 
-            session: session 
+
+        if (!rawLastName) {
+            return res.status(400).json({ error: "Last Name is required" })
+        }
+
+        if (!rawEmail) {
+            return res.status(400).json({ error: "Email is required" })
+        }
+
+        // Trim string inputs
+        const firstName = rawFirstName.trim();
+        const lastName = rawLastName.trim();
+        const email = rawEmail.trim().toLowerCase();
+
+        if (!firstName) {
+            return res.status(400).json({ error: "First Name cannot be empty" })
+        }
+
+        if (!lastName) {
+            return res.status(400).json({ error: "Last Name cannot be empty" })
+        }
+
+        const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
+        if (!emailRegex.test(email)) {
+            return res.status(400).json({ error: "Invalid email address" })
+        }
+
+        if (!dateOfBirth) {
+            return res.status(400).json({ error: "Date of Birth is required" })
+        }
+
+        if (!validateDate(dateOfBirth)) {
+            return res.status(400).json({ error: "Invalid date of birth" })
+        }
+
+        if (!password) {
+            return res.status(400).json({ error: "Password is required" })
+        }
+
+        if (password.length < 8) {
+            return res.status(400).json({ error: "Password must be at least 8 characters long" })
+        }
+
+        // Check for duplicate email before inserting
+        const checkEmailQuery = `SELECT id FROM tbl_accounts WHERE email = ?`;
+        conn.query(checkEmailQuery, [email], async (err, existingUsers) => {
+            if (err) {
+                return res.status(500).json({ error: "An internal server error occurred" })
+            }
+
+            if (existingUsers.length > 0) {
+                return res.status(409).json({ error: "An account with this email already exists" })
+            }
+
+            // Hash the password before storing
+            const hashedPassword = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
+
+            const insertQuery = `INSERT INTO tbl_accounts (firstName, lastName, email, dateOfbirth, password) VALUES (?, ?, ?, ?, ?)`;
+            conn.query(insertQuery, [firstName, lastName, email, dateOfBirth, hashedPassword], (err, result) => {
+                if (err) {
+                    return res.status(500).json({ error: "Failed to register user" })
+                }
+
+                const SECRET_KEY = process.env.SECRET_KEY || generateId(70);
+                const token = jwt.sign({ id: result.insertId }, SECRET_KEY, { expiresIn: '1h' });
+                req.session.user = {
+                    id: result.insertId,
+                }
+
+                return res.status(201).json({
+                    message: "Registered successfully",
+                    token: token,
+                    session: req.session.user
+                })
+            })
         })
-    })
+    } catch (err) {
+        return res.status(500).json({ error: "An unexpected error occurred" })
+    }
 })
 
 app.listen(app.get('port'), app.get('host'), () => {
