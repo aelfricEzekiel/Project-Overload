@@ -10,10 +10,17 @@ app.post('/insert', (req, res) => {
     const email = req.body.email;
     const password = req.body.password;
 
-    const insertQuery = `INSERT INTO students VALUES ("${id}", "${email}", "${password}")`;
+    if (!email || !password) {
+        return res.status(400).send({ error: "Email and password are required" });
+    }
 
-    conn.query(insertQuery, (err, result) => {
-        if (err) throw err;
+    const insertQuery = `INSERT INTO students VALUES (?, ?, ?)`;
+
+    conn.query(insertQuery, [id, email, password], (err, result) => {
+        if (err) {
+            console.error('Database insert error:', err);
+            return res.status(500).send({ error: "Failed to insert student" });
+        }
         res.send({
             response: "1 student inserted"
         });
