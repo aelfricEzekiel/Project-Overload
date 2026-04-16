@@ -6,30 +6,28 @@ const conn = require('./mysql/conn');
 const jwt = require('jsonwebtoken');
 const path = require('path');
 const session = require('express-session');
+const crypto = require('crypto');
+
+require('dotenv').config();
 
 app.set('port', process.env.PORT || 5000);
 app.set('host', process.env.HOST || 'localhost');
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(bodyParser.json());
-app.use(cors());
+app.use(cors({
+    origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+    credentials: true,
+}));
 app.use(express.static(path.join(__dirname, 'public')));
 
-function generateId(length) {
-    let result = '';
-    let characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%&*()_+';
-    let charactersLength = characters.length;
-    for (let i = 0; i < length; i++) {
-        result += characters.charAt(Math.floor(Math.random() * charactersLength));
-    }
-    return result;
-}
-
 app.use(session({
-    secret: process.env.SESSION_KEY || generateId(70),
+    secret: process.env.SESSION_KEY || crypto.randomBytes(64).toString('hex'),
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: false,
+        secure: process.env.NODE_ENV === 'production',
+        httpOnly: true,
+        sameSite: 'lax',
     }
 }))
 
@@ -41,6 +39,9 @@ app.get('/api', (req, res) => {
 })
 
 app.get('/home', (req, res) => {
+    if (!req.session.user) {
+        return res.status(401).json({ error: "Unauthorized. Please log in." })
+    }
     return res.status(200).json({
         message: "Welcome to the Home Page",
         session: req.session.user
@@ -48,11 +49,16 @@ app.get('/home', (req, res) => {
 })
 
 app.get('/data', (req, res) => {
-    const data = `SELECT * FROM tbl_accounts`;
+    if (!req.session.user) {
+        return res.status(401).json({ error: "Unauthorized. Please log in." })
+    }
+
+    const data = `SELECT id, firstName, lastName, email, dateOfbirth FROM tbl_accounts`;
 
     conn.query(data, (err, result) => {
         if (err) {
-            return res.json({ message: `Cannot retrieve data:  ${err}` })
+            console.error('Database query error:', err);
+            return res.status(500).json({ error: 'Failed to retrieve data' })
         } else {
             return res.json({ message: result })
         }
@@ -60,25 +66,13 @@ app.get('/data', (req, res) => {
 })
 
 app.post('/login', (req, res) => {
-    function generateId(length) {
-        let result = '';
-        let characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%&*()_+';
-        let charactersLength = characters.length;
-        for (let i = 0; i < length; i++) {
-            result += characters.charAt(Math.floor(Math.random() * charactersLength));
-        }
-        return result;
-    }
-
     const { email, password } = req.body;
-    const SECRET_KEY = process.env.SECRET_KEY || generateId(70);
+    const SECRET_KEY = process.env.SECRET_KEY || crypto.randomBytes(64).toString('hex');
 
     if (!SECRET_KEY) {
         return res.json({
             error: "Failed to generate token"
         })
-    } else {
-        console.log(`Token: ${SECRET_KEY}`);
     }
 
     const loggedInQuery = `SELECT * FROM tbl_accounts WHERE email = ? AND password = ?`;
@@ -167,22 +161,10 @@ const validateDate = (date) => {
 app.post('/register', (req, res) => {
     const { firstName, lastName, dateOfBirth, email, password } = req.body;
 
-    function generateId(length) {
-        let result = '';
-        let characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%&*()_+';
-        let charactersLength = characters.length;
-        for (let i = 0; i < length; i++) {
-            result += characters.charAt(Math.floor(Math.random() * charactersLength));
-        }
-        return result;
-    }
-
-    const generateToken = process.env.SECRET_KEY || generateId(70);
+    const generateToken = process.env.SECRET_KEY || crypto.randomBytes(64).toString('hex');
 
     if (!generateToken) {
         return res.json({ error: "Failed to generate token" })
-    } else {
-        console.log(`Registration Token: ${generateToken}`);
     }
 
     const insertquery = `INSERT INTO tbl_accounts (firstName, lastName, email, dateOfbirth, password) VALUES (?, ?, ?, ?, ?)`;
